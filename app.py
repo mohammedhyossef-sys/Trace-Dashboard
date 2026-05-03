@@ -7,8 +7,8 @@ from streamlit_folium import st_folium
 # ---------------------------
 # PAGE
 # ---------------------------
-st.set_page_config(layout="wide")
-st.title("📡 Network Performance Dashboard (Mbps)")
+st.set_page_config(layout="wide", page_title="Trace Dashboard")
+st.title("📡 Trace Dashboard (Mbps)")
 
 # ---------------------------
 # UPLOAD
@@ -39,14 +39,7 @@ trace_col = next((c for c in cols if c in trace_df.columns), None)
 
 if trace_col is None:
     st.error("❌ No Site Column Found")
-    st.write(trace_df.columns)
     st.stop()
-
-# ---------------------------
-# SERVICE COLUMN
-# ---------------------------
-service_cols = ["Service Type","Service","Application","QCI"]
-service_col = next((c for c in service_cols if c in trace_df.columns), None)
 
 # ---------------------------
 # CLEAN
@@ -56,6 +49,10 @@ def clean(x):
 
 trace_df[trace_col] = trace_df[trace_col].apply(clean)
 on_air_df["Site ID"] = on_air_df["Site ID"].apply(clean)
+
+# IMSI CLEAN
+if "IMSI" in trace_df.columns:
+    trace_df["IMSI"] = trace_df["IMSI"].astype(str)
 
 # ---------------------------
 # TIME
@@ -83,25 +80,16 @@ trace_df["Duration"] = (trace_df["End Time"] - trace_df["Start Time"]).dt.total_
 trace_df = trace_df[trace_df["Duration"] > 0]
 
 # ---------------------------
-# AUTO TRAFFIC DETECT
+# TRAFFIC COLUMN
 # ---------------------------
 traffic_col = None
-
 for col in trace_df.columns:
-    c = col.lower()
-    if "downlink" in c and ("total" in c or "volume" in c):
+    if "downlink" in col.lower():
         traffic_col = col
         break
 
 if traffic_col is None:
-    for col in trace_df.columns:
-        if "dl" in col.lower():
-            traffic_col = col
-            break
-
-if traffic_col is None:
     st.error("❌ No Traffic Column Found")
-    st.write(trace_df.columns)
     st.stop()
 
 # ---------------------------
@@ -125,26 +113,34 @@ trace_df["Throughput"] = (trace_df["Traffic"] * 8) / (trace_df["Duration"] * 1_0
 # ---------------------------
 st.sidebar.header("🔎 Filters")
 
-sites = trace_df[trace_col].dropna().unique()
-selected_site = st.sidebar.selectbox("Site", ["All"] + list(sites))
+# IMSI FILTER
+if "IMSI" in trace_df.columns:
+    imsi_list = trace_df["IMSI"].dropna().astype(str).unique()
+
+    selected_imsi = st.sidebar.multiselect(
+        "👤 Select Users (IMSI)",
+        options=imsi_list,
+        default=[]
+    )
+else:
+    selected_imsi = []
+
+# SITE FILTER
+sites = trace_df[trace_col].unique()
+selected_site = st.sidebar.selectbox("📡 Site", ["All"] + list(sites))
 
 # EXTRA FILTERS
 extra_filters = {}
-filter_cols = ["App Name", "Radio Access Type", "Roaming Status"]
+filter_cols = ["App Name","Radio Access Type","Roaming Status"]
 
 for col in filter_cols:
     if col in trace_df.columns:
         values = trace_df[col].dropna().astype(str).unique()
-        selected = st.sidebar.selectbox(col, ["All"] + list(values))
-        extra_filters[col] = selected
+        extra_filters[col] = st.sidebar.selectbox(col, ["All"] + list(values))
 
 # TIME FILTER
 min_time = trace_df["Start Time"].min()
 max_time = trace_df["Start Time"].max()
-
-if pd.isna(min_time) or pd.isna(max_time):
-    st.error("❌ Invalid time range")
-    st.stop()
 
 time_range = st.sidebar.slider(
     "Time Range",
@@ -161,7 +157,9 @@ df = trace_df.copy()
 if selected_site != "All":
     df = df[df[trace_col] == selected_site]
 
-# APPLY EXTRA
+if selected_imsi:
+    df = df[df["IMSI"].astype(str).isin(selected_imsi)]
+
 for col, val in extra_filters.items():
     if val != "All":
         df = df[df[col].astype(str) == val]
@@ -176,17 +174,37 @@ if df.empty:
     df = trace_df.copy()
 
 # ---------------------------
+# DEVICE INFO
+# ---------------------------
+device_info = "N/A"
+
+if "Device Brand" in df.columns and "Device Model" in df.columns:
+    devices = (
+        df["Device Brand"].astype(str).fillna("") + " " +
+        df["Device Model"].astype(str).fillna("")
+    )
+
+    unique_devices = devices.dropna().unique()
+    device_info = ", ".join(unique_devices[:5])
+
+elif "Device Brand" in df.columns:
+    device_info = ", ".join(df["Device Brand"].dropna().astype(str).unique()[:5])
+
+elif "Device Model" in df.columns:
+    device_info = ", ".join(df["Device Model"].dropna().astype(str).unique()[:5])
+
+# ---------------------------
 # KPIs
 # ---------------------------
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3, c4, c5 = st.columns(5)
 
 c1.metric("📡 Sites", df[trace_col].nunique())
 c2.metric("⚡ Avg Throughput (Mbps)", round(df["Throughput"].mean(), 2))
+c3.metric("👤 Users", df["IMSI"].nunique() if "IMSI" in df.columns else 0)
 
-users_count = df["IMSI"].nunique() if "IMSI" in df.columns else 0
-c3.metric("👤 Users", users_count)
+c4.metric("📱 Devices", device_info)
 
-c4.metric("📊 Records", len(df))
+c5.metric("📊 Records", len(df))
 
 # ---------------------------
 # TIME SERIES
@@ -206,6 +224,8 @@ st.plotly_chart(fig_time, use_container_width=True)
 # ---------------------------
 # MAP
 # ---------------------------
+st.subheader("🗺️ Sites Map")
+
 site_perf = df.groupby(trace_col)["Throughput"].mean().reset_index()
 
 map_df = pd.merge(
@@ -220,25 +240,22 @@ map_df["Latitude"] = pd.to_numeric(map_df["Latitude"], errors="coerce")
 map_df["Longitude"] = pd.to_numeric(map_df["Longitude"], errors="coerce")
 map_df = map_df.dropna(subset=["Latitude","Longitude"])
 
-st.subheader("🗺️ Sites Map")
-
 m = folium.Map(location=[30.05,31.3], zoom_start=10)
 
-for _,row in map_df.iterrows():
+for _, row in map_df.iterrows():
     tp = row["Throughput"]
 
-    color = "green"
     if tp < 1:
         color = "red"
     elif tp < 5:
         color = "orange"
+    else:
+        color = "green"
 
-    folium.CircleMarker(
-        location=[row["Latitude"],row["Longitude"]],
-        radius=6,
-        color=color,
-        fill=True,
-        popup=f"{row['Site ID']} | {round(tp,2)} Mbps"
+    folium.Marker(
+        location=[row["Latitude"], row["Longitude"]],
+        popup=f"{row['Site ID']} | {round(tp,2)} Mbps",
+        icon=folium.Icon(icon="signal", prefix="fa", color=color)
     ).add_to(m)
 
 st_folium(m, width=800, height=500)
