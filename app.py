@@ -163,6 +163,22 @@ time_range = st.sidebar.slider(
 )
 
 # ---------------------------
+# USER LOCATION INPUT (NEW)
+# ---------------------------
+st.sidebar.header("📍 User Location (Optional)")
+
+user_lat = st.sidebar.text_input("Latitude")
+user_lon = st.sidebar.text_input("Longitude")
+
+user_location = None
+
+try:
+    if user_lat and user_lon:
+        user_location = (float(user_lat), float(user_lon))
+except:
+    user_location = None
+
+# ---------------------------
 # APPLY FILTERS
 # ---------------------------
 df = trace_df.copy()
@@ -301,6 +317,8 @@ if planned_file is not None:
 
     except:
         planned_df = None
+
+
 # ---------------------------
 # MAP
 # ---------------------------
@@ -324,7 +342,24 @@ for _, row in map_df.iterrows():
         popup=row["Site ID"],
         icon=folium.Icon(color=color)
     ).add_to(m)
+# ---------------------------
+# USER LOCATION ON MAP
+# ---------------------------
+if user_location is not None:
+    folium.Marker(
+        user_location,
+        popup="👤 User Location",
+        icon=folium.Icon(color="purple", icon="user")
+    ).add_to(m)
 
+    # optional circle around user
+    folium.Circle(
+        location=user_location,
+        radius=500,  # بالمتر
+        color="purple",
+        fill=True,
+        fill_opacity=0.1
+    ).add_to(m)
 # Planned Sites layer (blue circles) - ONLY NEAR ACTIVE SITES
 if planned_df is not None:
 
