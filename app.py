@@ -3,6 +3,7 @@ import streamlit as st
 import plotly.express as px
 import folium
 from streamlit_folium import st_folium
+import numpy as np
 
 # ---------------------------
 # CONFIG
@@ -19,15 +20,25 @@ st.sidebar.header("📁 Upload Files")
 
 trace_file = st.sidebar.file_uploader("Upload Trace File", type=["xlsx"])
 onair_file = st.sidebar.file_uploader("Upload On-Air File", type=["xlsx"])
-
+down_file = st.sidebar.file_uploader("Upload Down Sites File (Optional)", type=["xlsx"])
+planned_file = st.sidebar.file_uploader("Upload Planned Sites File (Optional)", type=["xlsx"])
 if trace_file is None or onair_file is None:
     st.warning("📌 Upload BOTH files")
     st.stop()
 
 # ---------------------------
+# READ MSISDN FROM USER PLAN (C8)
+# ---------------------------
+try:
+    user_plan_df = pd.read_excel(trace_file, sheet_name=0, header=None)
+    msisdn_value = user_plan_df.iloc[7, 2]
+except:
+    msisdn_value = "N/A"
+
+# ---------------------------
 # READ DATA
 # ---------------------------
-trace_df = pd.read_excel(trace_file)
+trace_df = pd.read_excel(trace_file, sheet_name=1)
 on_air_df = pd.read_excel(onair_file)
 
 trace_df.columns = trace_df.columns.str.strip()
@@ -51,10 +62,6 @@ def clean(x):
 
 trace_df[trace_col] = trace_df[trace_col].apply(clean)
 on_air_df["Site ID"] = on_air_df["Site ID"].apply(clean)
-
-# IMSI
-if "IMSI" in trace_df.columns:
-    trace_df["IMSI"] = trace_df["IMSI"].astype(str)
 
 # ---------------------------
 # TIME
@@ -122,25 +129,21 @@ trace_df["Throughput"] = (trace_df["Traffic_MB"] * 8) / trace_df["Duration"]
 # ---------------------------
 st.sidebar.header("🔎 Filters")
 
-# IMSI
 if "IMSI" in trace_df.columns:
     imsi_list = trace_df["IMSI"].dropna().astype(str).unique()
     selected_imsi = st.sidebar.multiselect("👤 Select Users (IMSI)", imsi_list, default=[])
 else:
     selected_imsi = []
 
-# SERVICE TYPE
 if "Service Type" in trace_df.columns:
     service_types = sorted(trace_df["Service Type"].dropna().astype(str).unique())
     selected_service = st.sidebar.multiselect("📶 Service Type", service_types, default=[])
 else:
     selected_service = []
 
-# SITE
 sites = trace_df[trace_col].unique()
 selected_site = st.sidebar.selectbox("📡 Site", ["All"] + list(sites))
 
-# EXTRA FILTERS
 extra_filters = {}
 filter_cols = ["App Name", "Radio Access Type", "Roaming Status"]
 
@@ -149,7 +152,6 @@ for col in filter_cols:
         values = trace_df[col].dropna().astype(str).unique()
         extra_filters[col] = st.sidebar.selectbox(col, ["All"] + list(values))
 
-# TIME FILTER
 min_time = trace_df["Start Time"].min()
 max_time = trace_df["Start Time"].max()
 
@@ -188,22 +190,25 @@ if df.empty:
     df = trace_df.copy()
 
 # ---------------------------
-# DEVICE INFO
+# DEVICE INFO (RESTORED)
 # ---------------------------
 device_info = "N/A"
 
 if "Device Brand" in df.columns and "Device Model" in df.columns:
-    devices = df["Device Brand"].astype(str).fillna("") + " " + df["Device Model"].astype(str).fillna("")
+    devices = (
+        df["Device Brand"].astype(str).fillna("") + " " +
+        df["Device Model"].astype(str).fillna("")
+    )
     device_info = ", ".join(devices.dropna().unique()[:5])
 
 # ---------------------------
-# KPIs
+# KPI
 # ---------------------------
 c1, c2, c3, c4, c5 = st.columns(5)
 
 c1.metric("📡 Sites", df[trace_col].nunique())
 c2.metric("⚡ Avg Throughput (Mbps)", round(df["Throughput"].mean(), 2))
-c3.metric("👤 Users", df["IMSI"].nunique() if "IMSI" in df.columns else 0)
+c3.metric("👤 Users", df["IMSI"].nunique() if "IMSI" in df.columns else 0, delta=f"MSISDN: {msisdn_value}")
 c4.metric("📱 Devices", device_info)
 c5.metric("📊 Records", len(df))
 
@@ -213,8 +218,23 @@ c5.metric("📊 Records", len(df))
 df["Time"] = df["Start Time"].dt.floor("min")
 time_data = df.groupby("Time")["Throughput"].mean().reset_index()
 
-fig_time = px.line(time_data, x="Time", y="Throughput", title="Throughput Over Time (Mbps)")
-st.plotly_chart(fig_time, use_container_width=True)
+st.plotly_chart(
+    px.line(time_data, x="Time", y="Throughput", title="Throughput Over Time"),
+    use_container_width=True
+)
+
+# ---------------------------
+# HOURLY
+# ---------------------------
+st.subheader("📈 Hourly Average Throughput")
+
+df["Time_Hour"] = df["Start Time"].dt.floor("h")
+hourly_data = df.groupby("Time_Hour")["Throughput"].mean().reset_index()
+
+st.plotly_chart(
+    px.line(hourly_data, x="Time_Hour", y="Throughput"),
+    use_container_width=True
+)
 
 # ---------------------------
 # NETWORK COMPARISON (FIXED)
@@ -251,6 +271,37 @@ else:
     st.warning("⚠️ No network column found")
 
 # ---------------------------
+# PLANNED SITES (SAFE ADDITION - NO BREAKING)
+# ---------------------------
+planned_df = None
+
+if planned_file is not None:
+    try:
+        planned_df = pd.read_excel(planned_file)
+        planned_df.columns = planned_df.columns.str.strip()
+
+        def clean(x):
+            return str(x).upper().replace(" ", "").replace("-", "")
+
+        # Clean Site ID if exists
+        if "Site ID" in planned_df.columns:
+            planned_df["Site ID"] = planned_df["Site ID"].apply(clean)
+
+        # 🔴 SAFE detection (no KeyError)
+        lat_col = next((c for c in planned_df.columns if "lat" in c.lower()), None)
+        lon_col = next((c for c in planned_df.columns if "lon" in c.lower()), None)
+
+        if lat_col is not None and lon_col is not None:
+            planned_df["Latitude"] = pd.to_numeric(planned_df[lat_col], errors="coerce")
+            planned_df["Longitude"] = pd.to_numeric(planned_df[lon_col], errors="coerce")
+
+            planned_df = planned_df.dropna(subset=["Latitude", "Longitude"])
+        else:
+            planned_df = None
+
+    except:
+        planned_df = None
+# ---------------------------
 # MAP
 # ---------------------------
 st.subheader("🗺️ Sites Map")
@@ -261,20 +312,90 @@ map_df = pd.merge(site_perf, on_air_df, left_on=trace_col, right_on="Site ID", h
 
 map_df["Latitude"] = pd.to_numeric(map_df["Latitude"], errors="coerce")
 map_df["Longitude"] = pd.to_numeric(map_df["Longitude"], errors="coerce")
-map_df = map_df.dropna(subset=["Latitude", "Longitude"])
+map_df = map_df.dropna()
 
 m = folium.Map(location=[30.05, 31.3], zoom_start=10)
 
 for _, row in map_df.iterrows():
-    tp = row["Throughput"]
-
-    color = "red" if tp < 1 else "orange" if tp < 5 else "green"
+    color = "red" if row["Throughput"] < 1 else "green"
 
     folium.Marker(
-        location=[row["Latitude"], row["Longitude"]],
-        popup=f"{row['Site ID']} | {round(tp,2)} Mbps",
-        icon=folium.Icon(icon="signal", prefix="fa", color=color)
+        [row["Latitude"], row["Longitude"]],
+        popup=row["Site ID"],
+        icon=folium.Icon(color=color)
     ).add_to(m)
+
+# Planned Sites layer (blue circles) - ONLY NEAR ACTIVE SITES
+if planned_df is not None:
+
+    def distance(lat1, lon1, lat2, lon2):
+        return np.sqrt((lat1 - lat2)**2 + (lon1 - lon2)**2)
+
+    for _, p in planned_df.iterrows():
+
+        for _, a in map_df.iterrows():
+
+            if pd.isna(a["Latitude"]) or pd.isna(a["Longitude"]):
+                continue
+
+            dist = distance(
+                p["Latitude"], p["Longitude"],
+                a["Latitude"], a["Longitude"]
+            )
+
+            # 👇 threshold بسيط للقرب
+            if dist < 0.05:
+
+                folium.CircleMarker(
+                    [p["Latitude"], p["Longitude"]],
+                    radius=6,
+                    color="blue",
+                    fill=True,
+                    fill_opacity=0.6,
+                    popup=f"PLANNED: {p['Site ID']}"
+                ).add_to(m)
+
+                break
+# ---------------------------
+# NEARBY ALERT
+# ---------------------------
+st.subheader("🚨 Nearby Impact Alert")
+
+def distance(lat1, lon1, lat2, lon2):
+    return np.sqrt((lat1 - lat2)**2 + (lon1 - lon2)**2)
+
+down_sites = site_perf[site_perf["Throughput"] < 1].merge(
+    on_air_df, left_on=trace_col, right_on="Site ID", how="left"
+)
+
+down_sites["Latitude"] = pd.to_numeric(down_sites["Latitude"], errors="coerce")
+down_sites["Longitude"] = pd.to_numeric(down_sites["Longitude"], errors="coerce")
+down_sites = down_sites.dropna()
+
+alerts = []
+
+for _, d in down_sites.iterrows():
+    for _, s in on_air_df.iterrows():
+
+        if d["Site ID"] == s["Site ID"]:
+            continue
+
+        if pd.isna(s["Latitude"]) or pd.isna(s["Longitude"]):
+            continue
+
+        dist = distance(d["Latitude"], d["Longitude"], s["Latitude"], s["Longitude"])
+
+        if dist < 0.02:
+            alerts.append({
+                "Down Site": d["Site ID"],
+                "Nearby Site": s["Site ID"],
+                "Distance": round(dist, 4)
+            })
+
+if alerts:
+    st.dataframe(pd.DataFrame(alerts))
+else:
+    st.success("No nearby impacted sites")
 
 st_folium(m, width=800, height=500)
 
@@ -286,13 +407,11 @@ st.subheader("🚨 Issues")
 df["Issue"] = "Good"
 df.loc[df["Throughput"] < 1, "Issue"] = "Low Throughput"
 df.loc[df["Throughput"] == 0, "Issue"] = "Zero Traffic"
-df.loc[df["Duration"] < 3, "Issue"] = "Drop Session"
 
-issues = df.groupby([trace_col, "Issue"]).size().reset_index(name="Count")
-st.dataframe(issues)
+st.dataframe(df.groupby([trace_col, "Issue"]).size().reset_index(name="Count"))
 
 # ---------------------------
-# TABLE
+# SAMPLE
 # ---------------------------
-st.subheader("📋 Data Sample")
+st.subheader("📋 Sample Data")
 st.dataframe(df.head(100))
