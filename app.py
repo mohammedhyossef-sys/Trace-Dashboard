@@ -6,6 +6,9 @@ from streamlit_folium import st_folium
 import numpy as np
 import math
 
+from plotly.subplots import make_subplots
+import plotly.graph_objects as go
+
 # ---------------------------
 # CONFIG
 # ---------------------------
@@ -606,7 +609,70 @@ st.plotly_chart(
     fig2,
     use_container_width=True
 )
+# ---------------------------
+# HOURLY DL THROUGHPUT + DL TRAFFIC
+# ---------------------------
+st.subheader("📊 Hourly Average DL Throughput & DL Traffic")
 
+dl_col = next(
+    (
+        c for c in df.columns
+        if "downlink throughput" in c.lower()
+    ),
+    None
+)
+
+if dl_col:
+
+    df["DL_Mbps"] = pd.to_numeric(df[dl_col], errors="coerce") / 1000
+    df["Hour"] = df["Start Time"].dt.floor("h")
+
+    hourly_dl = (
+        df.groupby("Hour")
+        .agg(
+            Avg_DL_Throughput=("DL_Mbps", "mean"),
+            Avg_DL_Traffic=("Traffic_MB", "mean")
+        )
+        .reset_index()
+    )
+
+    fig_dl = make_subplots(specs=[[{"secondary_y": True}]])
+
+    fig_dl.add_trace(
+        go.Scatter(
+            x=hourly_dl["Hour"],
+            y=hourly_dl["Avg_DL_Throughput"],
+            name="DL Throughput (Mbps)",
+            mode="lines+markers"
+        ),
+        secondary_y=False
+    )
+
+    fig_dl.add_trace(
+        go.Bar(
+            x=hourly_dl["Hour"],
+            y=hourly_dl["Avg_DL_Traffic"],
+            name="DL Traffic (MB)",
+            opacity=0.7
+        ),
+        secondary_y=True
+    )
+
+    fig_dl.update_layout(
+        template=plot_template,
+        title="Hourly Average DL Throughput & DL Traffic",
+        height=500
+    )
+
+    fig_dl.update_yaxes(title_text="DL Throughput (Mbps)", secondary_y=False)
+    fig_dl.update_yaxes(title_text="DL Traffic (MB)", secondary_y=True)
+
+    st.plotly_chart(fig_dl, use_container_width=True)
+
+    st.dataframe(hourly_dl, use_container_width=True)
+
+else:
+    st.warning("⚠️ Downlink Throughput column not found")
 # ---------------------------
 # NETWORK COMPARISON
 # ---------------------------
@@ -657,33 +723,27 @@ if net_col:
     )
 
     # ---------------------------
-    # CLASSIFY LOCAL / ROAMING
+    # CATEGORY (LOCAL / ROAMING)
     # ---------------------------
-    def classify_network(row):
-        if "Roaming Status" in df.columns:
-            val = str(row.get("Roaming Status", "")).upper()
-            if val == "ROAMING":
-                return "Roaming"
-        return "Local"
+    def classify_network(val):
+        val = str(val).upper()
+        if "ROAM" in val:
+            return "ROAMING"
+        return "LOCAL"
 
-    comparison["Category"] = df.groupby(net_col).first().reset_index().apply(
-        lambda row: classify_network(row),
-        axis=1
-    )
+    comparison["Category"] = comparison["Network"].apply(classify_network)
 
     # ---------------------------
     # COLORS
     # ---------------------------
     color_map = {
-        "Local": "#8e44ad",   # 🟣 موف
-        "Roaming": "orange"   # 🟠 برتقالي
+        "LOCAL": "purple",     # 🟣 موف
+        "ROAMING": "orange"    # 🟠 برتقالي
     }
 
     # ---------------------------
-    # CHART
+    # BAR CHART
     # ---------------------------
-  
-
     fig3 = px.bar(
         comparison,
         x="Network",
@@ -697,7 +757,6 @@ if net_col:
     fig3.update_layout(
         xaxis_title="Network Type",
         yaxis_title="Avg Downlink (Mbps)",
-        title="",
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
         bargap=0.4,
@@ -712,6 +771,19 @@ if net_col:
 
     st.plotly_chart(fig3, use_container_width=True)
 
+    # ---------------------------
+    # TABLE
+    # ---------------------------
+    st.dataframe(comparison, use_container_width=True)
+
+    # ---------------------------
+    # BEST NETWORK
+    # ---------------------------
+    best = comparison.sort_values("Avg_DL", ascending=False).iloc[0]
+    st.success(f"🏆 Best Network = {best['Network']}")
+
+else:
+    st.warning("⚠️ No network column found")
     # ---------------------------
     # TABLE (BOTTOM)
     # ---------------------------
