@@ -548,67 +548,120 @@ time_data = (
     .mean()
     .reset_index()
 )
-
-fig = px.line(
-    time_data,
-    x="Time",
-    y="Throughput",
-    title="📈 Throughput Over Time",
-    template="plotly_dark"
-)
-
-fig.update_traces(
-    mode="lines",
-    line=dict(
-        width=3,
-        color="purple"
-    )
-)
-
-st.plotly_chart(
-    fig,
-    use_container_width=True
-)
-
 # ---------------------------
-# HOURLY
+# DL & UL OVER TIME 
 # ---------------------------
-st.subheader("📈 Hourly Average Throughput")
+st.subheader("📈 DL & UL Throughput Over Time")
 
-df["Time_Hour"] = (
-    df["Start Time"].dt.floor("h")
-)
+df["Time"] = df["Start Time"].dt.floor("min")
 
-hourly_data = (
-    df.groupby("Time_Hour")["Throughput"]
+dl_col = "Downlink Throughput (Kbps)"
+ul_col = "Uplink Throughput (Kbps)"
+
+# تحويل إلى Mbps
+df["DL_Mbps"] = pd.to_numeric(df[dl_col], errors="coerce") / 1000
+df["UL_Mbps"] = pd.to_numeric(df[ul_col], errors="coerce") / 1000
+
+time_df = (
+    df.groupby("Time")[["DL_Mbps", "UL_Mbps"]]
     .mean()
     .reset_index()
 )
 
-fig2 = px.line(
-    hourly_data,
-    x="Time_Hour",
-    y="Throughput",
-    title="📊 Hourly Average Throughput",
-    template="plotly_dark"
-)
+fig1 = go.Figure()
 
-fig2.update_traces(
-    mode="lines+markers",
-    line=dict(
-        width=3,
-        color="purple"
+# DL (Left axis)
+fig1.add_trace(go.Scatter(
+    x=time_df["Time"],
+    y=time_df["DL_Mbps"],
+    mode="lines",
+    name="DL Throughput (Mbps)",
+    line=dict(color="purple", width=3),
+    yaxis="y1"
+))
+
+# UL (Right axis)
+fig1.add_trace(go.Scatter(
+    x=time_df["Time"],
+    y=time_df["UL_Mbps"],
+    mode="lines",
+    name="UL Throughput (Mbps)",
+    line=dict(color="orange", width=3),
+    yaxis="y2"
+))
+
+fig1.update_layout(
+    title=dict(
+        text="📶 DL vs UL Throughput Over Time",
+        font=dict(size=18)
     ),
-    marker=dict(
-        size=6,
-        color="purple"
+    template="plotly_dark",
+    xaxis=dict(title="Time"),
+
+    yaxis=dict(
+        title="DL Throughput (Mbps)",
+        tickfont=dict(color="purple")
+    ),
+
+    yaxis2=dict(
+        title="UL Throughput (Mbps)",
+        tickfont=dict(color="orange"),
+        overlaying="y",
+        side="right"
     )
 )
 
-st.plotly_chart(
-    fig2,
-    use_container_width=True
+st.plotly_chart(fig1, use_container_width=True)
+
+
+# ---------------------------
+# HOURLY DL & UL
+# ---------------------------
+st.subheader("📊 Hourly DL & UL Throughput")
+
+df["Hour"] = df["Start Time"].dt.floor("h")
+
+hour_df = (
+    df.groupby("Hour")[["DL_Mbps", "UL_Mbps"]]
+    .mean()
+    .reset_index()
 )
+
+fig2 = make_subplots(specs=[[{"secondary_y": True}]])
+
+# DL (Primary Y-axis)
+fig2.add_trace(
+    go.Scatter(
+        x=hour_df["Hour"],
+        y=hour_df["DL_Mbps"],
+        name="DL Throughput (Mbps)",
+        mode="lines+markers",
+        line=dict(color="purple", width=3)
+    ),
+    secondary_y=False
+)
+
+# UL (Secondary Y-axis)
+fig2.add_trace(
+    go.Scatter(
+        x=hour_df["Hour"],
+        y=hour_df["UL_Mbps"],
+        name="UL Throughput (Mbps)",
+        mode="lines+markers",
+        line=dict(color="orange", width=3)
+    ),
+    secondary_y=True
+)
+
+fig2.update_layout(
+    title="📊 Hourly DL & UL Throughput",
+    template="plotly_dark"
+)
+
+fig2.update_yaxes(title_text="DL Throughput (Mbps)", secondary_y=False)
+fig2.update_yaxes(title_text="UL Throughput (Mbps)", secondary_y=True)
+
+st.plotly_chart(fig2, use_container_width=True)
 # ---------------------------
 # HOURLY DL THROUGHPUT + DL TRAFFIC
 # ---------------------------
