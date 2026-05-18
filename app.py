@@ -1,3 +1,7 @@
+import os
+os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
+import traceback
+import streamlit as st
 import pandas as pd
 import streamlit as st
 import plotly.express as px
@@ -8,7 +12,6 @@ import math
 
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
-
 # ---------------------------
 # CONFIG
 # ---------------------------
