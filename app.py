@@ -174,7 +174,7 @@ def build_sector_popup(sector_row, layer_name, layer_color, throughput=None):
     for col, val in sector_row.items():
         if col in skip_cols or pd.isna(val) if not isinstance(val, str) else False:
             continue
-        val_str = str(val).strip()
+        val_str = str(val).strip().replace("\\", " / ").replace("\xa0", " ")
         if val_str in ("", "nan", "None"):
             continue
         rows_html += f"""
@@ -344,7 +344,7 @@ def load_optional_file(file_bytes):
     return df
 
 # Read all trace files and combine
-on_air_df = load_sectors_file(sectors_file.getvalue())
+on_air_df = load_sectors_file(sectors_file.getvalue()).copy()
 
 # Read customers file early to get Customer Name for MSISDN selector
 _cust_name_map = {}  # msisdn_normalized -> Customer Name
@@ -460,7 +460,7 @@ on_air_df["Site ID"] = on_air_df["Site ID"].apply(clean)
 # ---------------------------
 down_df = None
 if down_file is not None:
-    down_df = load_optional_file(down_file.getvalue())
+    down_df = load_optional_file(down_file.getvalue()).copy()
     if "Site ID" in down_df.columns:
         down_df["Site ID"] = down_df["Site ID"].apply(clean)
     # Get coordinates from on_air_df if available, but do not drop unmatched rows
@@ -487,7 +487,7 @@ planned_df = None
 
 if planned_file is not None:
     try:
-        planned_df = load_optional_file(planned_file.getvalue())
+        planned_df = load_optional_file(planned_file.getvalue()).copy()
 
         if "Site ID" in planned_df.columns:
             planned_df["Site ID"] = planned_df["Site ID"].apply(clean)
@@ -1113,168 +1113,173 @@ if planned_df is not None:
 # CUSTOMERS ON MAP — FIXED MSISDN MATCHING
 # ---------------------------
 if customers_df is not None:
-    # Find MSISDN column in customers file
-    msisdn_col_cust = next(
-        (c for c in customers_df.columns if "problematic msisdn" in c.lower()), None
-    ) or next(
-        (c for c in customers_df.columns
-         if any(x in c.lower() for x in ["msisdn", "mobile", "phone", "number"])),
-        None
-    )
+    try:
+        # Find MSISDN column in customers file
+        msisdn_col_cust = next(
+            (c for c in customers_df.columns if "problematic msisdn" in c.lower()), None
+        ) or next(
+            (c for c in customers_df.columns
+             if any(x in c.lower() for x in ["msisdn", "mobile", "phone", "number"])),
+            None
+        )
 
 
 
-    matched_customers = pd.DataFrame()
+        matched_customers = pd.DataFrame()
 
-    if msisdn_col_cust and msisdn_normalized:
-        # ✅ FIX: work on a COPY to avoid mutating the @st.cache_data DataFrame
-        # Mutating the cached object directly causes Streamlit to throw an exception
-        # OUTSIDE any try/except, which stops execution before st_folium() is called
-        # and makes the map disappear entirely.
-        _cdf = customers_df.copy()
-        _cdf["_norm_msisdn"] = _cdf[msisdn_col_cust].astype(str).apply(norm_msisdn)
+        if msisdn_col_cust and msisdn_normalized:
+            # ✅ FIX: work on a COPY to avoid mutating the @st.cache_data DataFrame
+            # Mutating the cached object directly causes Streamlit to throw an exception
+            # OUTSIDE any try/except, which stops execution before st_folium() is called
+            # and makes the map disappear entirely.
+            _cdf = customers_df.copy()
+            _cdf["_norm_msisdn"] = _cdf[msisdn_col_cust].astype(str).apply(norm_msisdn)
 
-        # Strategy 1: exact match on normalized number
-        matched_customers = _cdf[
-            _cdf["_norm_msisdn"] == msisdn_normalized
-        ].copy()
-
-        # Strategy 2: partial/suffix match — last 8 digits
-        if matched_customers.empty:
-            suffix_8 = msisdn_normalized[-8:] if len(msisdn_normalized) >= 8 else msisdn_normalized
+            # Strategy 1: exact match on normalized number
             matched_customers = _cdf[
-                _cdf["_norm_msisdn"].str.endswith(suffix_8)
+                _cdf["_norm_msisdn"] == msisdn_normalized
             ].copy()
 
-        # Strategy 3: contains the raw msisdn_value anywhere
+            # Strategy 2: partial/suffix match — last 8 digits
+            if matched_customers.empty:
+                suffix_8 = msisdn_normalized[-8:] if len(msisdn_normalized) >= 8 else msisdn_normalized
+                matched_customers = _cdf[
+                    _cdf["_norm_msisdn"].str.endswith(suffix_8)
+                ].copy()
+
+            # Strategy 3: contains the raw msisdn_value anywhere
+            if matched_customers.empty:
+                matched_customers = _cdf[
+                    _cdf[msisdn_col_cust].astype(str).str.contains(
+                        msisdn_normalized[-8:], na=False
+                    )
+                ].copy()
+
+
+
+        elif msisdn_col_cust is None:
+            st.sidebar.warning("⚠️ No MSISDN column found in Customers file")
+
+        cust_feature_group = folium.FeatureGroup(name=f"👤 Customers ({len(matched_customers)})", show=True)
+
         if matched_customers.empty:
-            matched_customers = _cdf[
-                _cdf[msisdn_col_cust].astype(str).str.contains(
-                    msisdn_normalized[-8:], na=False
-                )
-            ].copy()
+            st.info(f"ℹ️ No customers matched MSISDN: {msisdn_value}")
+        else:
+            st.success(f"✅ Found {len(matched_customers)} customer record(s) matching MSISDN: {msisdn_value}")
 
-
-
-    elif msisdn_col_cust is None:
-        st.sidebar.warning("⚠️ No MSISDN column found in Customers file")
-
-    cust_feature_group = folium.FeatureGroup(name=f"👤 Customers ({len(matched_customers)})", show=True)
-
-    if matched_customers.empty:
-        st.info(f"ℹ️ No customers matched MSISDN: {msisdn_value}")
-    else:
-        st.success(f"✅ Found {len(matched_customers)} customer record(s) matching MSISDN: {msisdn_value}")
-
-    # Compute occurrence count per site
-    loc_counts = {}
-    for _, cust in matched_customers.iterrows():
-        try:
-            lat_val = cust.get("Latitude")
-            lon_val = cust.get("Longitude")
-            
-            if lat_val is None or lon_val is None:
-                continue
-            
+        # Compute occurrence count per site
+        loc_counts = {}
+        for _, cust in matched_customers.iterrows():
             try:
-                lat = float(lat_val)
-                lon = float(lon_val)
-                if pd.isna(lat) or pd.isna(lon):
+                lat_val = cust.get("Latitude")
+                lon_val = cust.get("Longitude")
+            
+                if lat_val is None or lon_val is None:
                     continue
-                key = (round(lat, 6), round(lon, 6))
-                loc_counts[key] = loc_counts.get(key, 0) + 1
-            except (ValueError, TypeError):
+            
+                try:
+                    lat = float(lat_val)
+                    lon = float(lon_val)
+                    if pd.isna(lat) or pd.isna(lon):
+                        continue
+                    key = (round(lat, 6), round(lon, 6))
+                    loc_counts[key] = loc_counts.get(key, 0) + 1
+                except (ValueError, TypeError):
+                    continue
+            except:
                 continue
-        except:
-            continue
 
-    loc_seen = {}
-    for _, cust in matched_customers.iterrows():
-        try:
-            # Safe coordinate extraction
-            lat_val = cust.get("Latitude")
-            lon_val = cust.get("Longitude")
-            
-            # Convert to float safely
-            if lat_val is None or lon_val is None:
-                continue
-            
+        loc_seen = {}
+        for _, cust in matched_customers.iterrows():
             try:
-                c_lat = float(lat_val)
-                c_lon = float(lon_val)
-            except (ValueError, TypeError):
-                continue
+                # Safe coordinate extraction
+                lat_val = cust.get("Latitude")
+                lon_val = cust.get("Longitude")
             
-            # Skip if coordinates are invalid
-            if pd.isna(c_lat) or pd.isna(c_lon):
-                continue
+                # Convert to float safely
+                if lat_val is None or lon_val is None:
+                    continue
             
-            key = (round(c_lat, 6), round(c_lon, 6))
-            idx = loc_seen.get(key, 0)
-            loc_seen[key] = idx + 1
-            total = loc_counts.get(key, 1)  # Safer dict access
-
-            # offset Small so repeated markers do not overlap
-            c_lat += 0.0001 * idx
-            c_lon += 0.0001 * idx
-
-            status_val = str(cust.get("Status", "")).upper()
-            if "CLOSED" in status_val or "RESOLVED" in status_val:
-                header_color = "#27ae60"; marker_color = "green"; status_icon = "✅"
-            elif "QUEUED" in status_val or "OPEN" in status_val or "PROGRESS" in status_val:
-                header_color = "#c0392b"; marker_color = "red"; status_icon = "🔴"
-            else:
-                header_color = "#8e44ad"; marker_color = "purple"; status_icon = "👤"
-
-            msisdn_val = str(cust.get(msisdn_col_cust, "Customer")) if msisdn_col_cust else "Customer"
-            tooltip_text = f"{status_icon} {msisdn_val}"
-            if total > 1:
-                tooltip_text += f" ({idx+1}/{total} repeated)"
-
-            # Build full Customer data table
-            popup_rows = ""
-            skip_cols = {"Latitude", "Longitude", "MSISDN_clean", "_norm_msisdn"}
-            for col, val in cust.items():
-                if col in skip_cols:
+                try:
+                    c_lat = float(lat_val)
+                    c_lon = float(lon_val)
+                except (ValueError, TypeError):
                     continue
-                val_str = str(val).strip().replace("\xa0", " ").replace("\\\\", " / ")
-                if val_str in ("", "nan", "None", "NaT"):
+            
+                # Skip if coordinates are invalid
+                if pd.isna(c_lat) or pd.isna(c_lon):
                     continue
-                popup_rows += (f"<tr style='border-bottom:1px solid #f0f0f0'>"
-                               f"<td style='padding:3px 8px;color:#666;white-space:nowrap;font-weight:bold'>{col}</td>"
-                               f"<td style='padding:3px 8px'>{val_str}</td></tr>")
+            
+                key = (round(c_lat, 6), round(c_lon, 6))
+                idx = loc_seen.get(key, 0)
+                loc_seen[key] = idx + 1
+                total = loc_counts.get(key, 1)  # Safer dict access
 
-            repeat_banner = ""
-            if total > 1:
-                repeat_banner = (f"<div style='background:#fff3cd;color:#856404;padding:5px 10px;"
-                                 f"font-size:11px;font-weight:bold'>"
-                                 f"⚠️ Repeated {total}x at same location (showing {idx+1}/{total})</div>")
+                # offset Small so repeated markers do not overlap
+                c_lat += 0.0001 * idx
+                c_lon += 0.0001 * idx
 
-            popup_html = f"""
-            <div style='font-family:Arial;font-size:12px;min-width:260px;max-width:360px;
-                        box-shadow:0 2px 8px rgba(0,0,0,0.2);border-radius:6px;overflow:hidden'>
-              <div style='background:{header_color};color:white;padding:6px 10px;font-weight:bold;font-size:13px'>
-                {status_icon} {msisdn_val}
-              </div>
-              <div style='max-height:300px;overflow-y:auto'>
-                <table style='width:100%;border-collapse:collapse'>
-                  {popup_rows}
-                </table>
-              </div>
-              {repeat_banner}
-            </div>"""
+                status_val = str(cust.get("Status", "")).upper()
+                if "CLOSED" in status_val or "RESOLVED" in status_val:
+                    header_color = "#27ae60"; marker_color = "green"; status_icon = "✅"
+                elif "QUEUED" in status_val or "OPEN" in status_val or "PROGRESS" in status_val:
+                    header_color = "#c0392b"; marker_color = "red"; status_icon = "🔴"
+                else:
+                    header_color = "#8e44ad"; marker_color = "purple"; status_icon = "👤"
 
-            folium.Marker(
-                [c_lat, c_lon],
-                popup=folium.Popup(popup_html, max_width=380),
-                icon=folium.Icon(color=marker_color, icon="user", prefix="fa"),
-                tooltip=tooltip_text
-            ).add_to(cust_feature_group)
+                msisdn_val = str(cust.get(msisdn_col_cust, "Customer")) if msisdn_col_cust else "Customer"
+                tooltip_text = f"{status_icon} {msisdn_val}"
+                if total > 1:
+                    tooltip_text += f" ({idx+1}/{total} repeated)"
 
-        except:
-            continue
+                # Build full Customer data table
+                popup_rows = ""
+                skip_cols = {"Latitude", "Longitude", "MSISDN_clean", "_norm_msisdn"}
+                for col, val in cust.items():
+                    if col in skip_cols:
+                        continue
+                    val_str = str(val).strip().replace("\xa0", " ").replace("\\", " / ").replace("\r", " ").replace("\n", " ")
+                    if val_str in ("", "nan", "None", "NaT"):
+                        continue
+                    popup_rows += (f"<tr style='border-bottom:1px solid #f0f0f0'>"
+                                   f"<td style='padding:3px 8px;color:#666;white-space:nowrap;font-weight:bold'>{col}</td>"
+                                   f"<td style='padding:3px 8px'>{val_str}</td></tr>")
 
-    cust_feature_group.add_to(m)
+                repeat_banner = ""
+                if total > 1:
+                    repeat_banner = (f"<div style='background:#fff3cd;color:#856404;padding:5px 10px;"
+                                     f"font-size:11px;font-weight:bold'>"
+                                     f"⚠️ Repeated {total}x at same location (showing {idx+1}/{total})</div>")
+
+                popup_html = f"""
+                <div style='font-family:Arial;font-size:12px;min-width:260px;max-width:360px;
+                            box-shadow:0 2px 8px rgba(0,0,0,0.2);border-radius:6px;overflow:hidden'>
+                  <div style='background:{header_color};color:white;padding:6px 10px;font-weight:bold;font-size:13px'>
+                    {status_icon} {msisdn_val}
+                  </div>
+                  <div style='max-height:300px;overflow-y:auto'>
+                    <table style='width:100%;border-collapse:collapse'>
+                      {popup_rows}
+                    </table>
+                  </div>
+                  {repeat_banner}
+                </div>"""
+
+                folium.Marker(
+                    [c_lat, c_lon],
+                    popup=folium.Popup(popup_html, max_width=380),
+                    icon=folium.Icon(color=marker_color, icon="user", prefix="fa"),
+                    tooltip=tooltip_text
+                ).add_to(cust_feature_group)
+
+            except:
+                continue
+
+        cust_feature_group.add_to(m)
+
+    except Exception as _cust_map_err:
+        import traceback
+        st.warning(f"⚠️ Customer layer skipped — {_cust_map_err}")
 
 # ---------------------------
 # USER LOCATION
@@ -1333,9 +1338,7 @@ else:
 # LAYER CONTROL + SHOW MAP
 # ---------------------------
 folium.LayerControl(collapsed=False).add_to(m)
-st.markdown('<div style="background:#fff;border-radius:14px;padding:16px;box-shadow:0 2px 12px rgba(0,0,0,.06);margin-bottom:16px">', unsafe_allow_html=True)
 st_folium(m, use_container_width=True, height=580)
-st.markdown('</div>', unsafe_allow_html=True)
 
 
 
@@ -1510,24 +1513,22 @@ def build_export_html():
              if any(x in c.lower() for x in ["msisdn", "mobile", "phone", "number"])),
             None
         )
-        # ✅ FIX: work on a COPY to avoid mutating the @st.cache_data DataFrame
-        _customers_df_exp = customers_df.copy()
-        if _msisdn_col_exp and "_norm_msisdn" not in _customers_df_exp.columns:
-            _customers_df_exp["_norm_msisdn"] = _customers_df_exp[_msisdn_col_exp].astype(str).apply(norm_msisdn)
+        if _msisdn_col_exp and "_norm_msisdn" not in customers_df.columns:
+            customers_df["_norm_msisdn"] = customers_df[_msisdn_col_exp].astype(str).apply(norm_msisdn)
 
         for _mn in all_msisdn_norm:
             _matched = pd.DataFrame()
             if _msisdn_col_exp:
                 # Strategy 1: exact
-                _matched = _customers_df_exp[_customers_df_exp["_norm_msisdn"] == _mn].copy()
+                _matched = customers_df[customers_df["_norm_msisdn"] == _mn].copy()
                 # Strategy 2: suffix 8
                 if _matched.empty:
                     _sfx = _mn[-8:] if len(_mn) >= 8 else _mn
-                    _matched = _customers_df_exp[_customers_df_exp["_norm_msisdn"].str.endswith(_sfx)].copy()
+                    _matched = customers_df[customers_df["_norm_msisdn"].str.endswith(_sfx)].copy()
                 # Strategy 3: contains
                 if _matched.empty:
-                    _matched = _customers_df_exp[
-                        _customers_df_exp[_msisdn_col_exp].astype(str).str.contains(_mn[-8:], na=False)
+                    _matched = customers_df[
+                        customers_df[_msisdn_col_exp].astype(str).str.contains(_mn[-8:], na=False)
                     ].copy()
             if not _matched.empty:
                 _exp = _matched.drop(columns=["_norm_msisdn"], errors="ignore").fillna("")
