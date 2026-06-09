@@ -100,7 +100,10 @@ st.markdown("""
 # FUNCTIONS
 # ---------------------------
 def clean(x):
-    return str(x).upper().replace(" ", "").replace("-", "")
+    s = str(x).strip()
+    if s == "--":
+        return "--"
+    return s.upper().replace(" ", "").replace("-", "")
 
 def extract_site_id(sector_name):
     """
@@ -591,7 +594,7 @@ if trace_col and trace_col in trace_df.columns:
 
 # Build extracted Site ID column from sector name (removes _N suffix)
 trace_df["_site_id_clean"] = trace_df[trace_col].apply(extract_site_id)
-_bad_mask = trace_df["_site_id_clean"].isin(["", "--", "NAN", "NONE"])
+_bad_mask = trace_df["_site_id_clean"].isin(["", "NAN", "NONE"])
 
 # Only filter if there are good rows, otherwise keep all
 if not _bad_mask.all() and len(trace_df) > 0:
@@ -604,7 +607,7 @@ if not trace_df_all.empty and trace_col in trace_df_all.columns:
     else:
         trace_df_all[trace_col] = trace_df_all[trace_col].astype(str).apply(lambda x: clean(x) if x else x)
     trace_df_all["_site_id_clean"] = trace_df_all[trace_col].apply(extract_site_id)
-    _bad_all = trace_df_all["_site_id_clean"].isin(["", "--", "NAN", "NONE"])
+    _bad_all = trace_df_all["_site_id_clean"].isin(["", "NAN", "NONE"])
     if not _bad_all.all() and len(trace_df_all) > 0:
         trace_df_all = trace_df_all[~_bad_all].reset_index(drop=True)
 
@@ -1433,7 +1436,7 @@ def build_export_html():
     # Get all site IDs from trace_df_all directly (safer than merge)
     _all_trace_site_ids = set(
         trace_df_all["_site_id_clean"].dropna().unique()
-    ) - {"", "--", "NAN", "NONE"}
+    ) - {"", "NAN", "NONE"}
 
     sectors_export = on_air_df[
         on_air_df["Site ID"].isin(_all_trace_site_ids)
@@ -1457,7 +1460,7 @@ def build_export_html():
     # ── Sectors per MSISDN — exact + prefix fuzzy match ──
     _sectors_by_msisdn = {}
     for _mn, _info in _msisdn_kpis.items():
-        _sids = set(_info["site_ids"]) - {"", "--", "NAN", "NONE"}
+        _sids = set(_info["site_ids"]) - {"", "NAN", "NONE"}
         # exact match — fast isin lookup
         _matched = on_air_df[on_air_df["Site ID"].isin(_sids)][_sec_cols].copy()
         _sectors_by_msisdn[_mn] = _matched.fillna("").to_dict(orient="records")
